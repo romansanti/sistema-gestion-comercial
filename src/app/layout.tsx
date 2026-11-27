@@ -14,7 +14,8 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "Repuestos Tucumán | Gestión Comercial",
-  description: "Sistema de gestión comercial y mostrador de repuestos.",
+  description:
+    "Sistema de mostrador, catálogo, stock y cuenta corriente para repuestos de motos y autos.",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

@@ -1,9 +1,11 @@
-import crypto from "crypto";
 import { eq } from "drizzle-orm";
 import { cookies } from "next/headers";
 import { db } from "@/db";
 import { usuarios } from "@/db/schema";
 import { ApiError } from "./errors";
+import { firmarToken, verificarToken } from "./session-token";
+
+export { firmarToken, verificarToken } from "./session-token";
 
 const COOKIE_NAME = "sgc_session";
 
@@ -12,44 +14,6 @@ export interface UsuarioSesion {
   nombre: string;
   email: string;
   rol: "admin" | "vendedor";
-}
-
-function getSecret(): string {
-  const secret = process.env.SESSION_SECRET;
-  if (!secret || secret.length < 16) {
-    throw new Error("SESSION_SECRET no está configurado correctamente.");
-  }
-  return secret;
-}
-
-export function firmarToken(userId: number): string {
-  const payload = `${userId}.${Date.now()}`;
-  const sig = crypto
-    .createHmac("sha256", getSecret())
-    .update(payload)
-    .digest("hex");
-  return `${payload}.${sig}`;
-}
-
-export function verificarToken(token: string): number | null {
-  const parts = token.split(".");
-  if (parts.length !== 3) return null;
-  const [userIdStr, ts, sig] = parts;
-  const expectedSig = crypto
-    .createHmac("sha256", getSecret())
-    .update(`${userIdStr}.${ts}`)
-    .digest("hex");
-
-  const sigBuf = Buffer.from(sig, "hex");
-  const expBuf = Buffer.from(expectedSig, "hex");
-  if (
-    sigBuf.length !== expBuf.length ||
-    !crypto.timingSafeEqual(sigBuf, expBuf)
-  ) {
-    return null;
-  }
-  const id = Number(userIdStr);
-  return Number.isInteger(id) && id > 0 ? id : null;
 }
 
 export async function crearCookieSesion(userId: number): Promise<void> {

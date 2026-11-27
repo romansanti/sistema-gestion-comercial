@@ -1,12 +1,12 @@
 import { Suspense } from "react";
 import { redirect } from "next/navigation";
 import { obtenerUsuarioActual } from "@/lib/session";
-import UsuariosClientPage from "./usuarios-client-page";
+import UsuariosView from "@/components/usuarios/usuarios-view";
 
 async function AdminUsersPage() {
   const user = await obtenerUsuarioActual();
   if (!user || user.rol !== "admin") redirect("/ventas/nueva");
-  return <UsuariosClientPage />;
+  return <UsuariosView />;
 }
 
 export default function UsuariosPage() {

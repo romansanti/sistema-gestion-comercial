@@ -2,7 +2,7 @@
 
 import { useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
-import { AlertCircle, Lock, Mail, Wrench } from "lucide-react";
+import { AlertCircle, ArrowRight, LockKeyhole, Mail, Wrench } from "lucide-react";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -28,7 +28,7 @@ export default function LoginPage() {
         setLoading(false);
         return;
       }
-      router.push("/ventas/nueva");
+      router.push("/inicio");
       router.refresh();
     } catch {
       setError("No se pudo conectar con el servidor.");
@@ -36,101 +36,104 @@ export default function LoginPage() {
     }
   }
 
-  function fillCredentials(role: "admin" | "vendedor") {
-    setEmail(role === "admin" ? "admin@repuestos.com" : "vendedor@repuestos.com");
-    setPassword("123456");
-    setError(null);
-  }
-
   return (
-    <main className="flex min-h-screen items-center justify-center bg-slate-950 px-4 py-8">
-      <section className="w-full max-w-md rounded-2xl border border-slate-800 bg-slate-900 p-8 shadow-2xl">
-        <div className="mb-6 flex items-center gap-3">
-          <div className="rounded-xl border border-amber-500/30 bg-amber-500/15 p-3 text-amber-400">
-            <Wrench className="h-7 w-7" />
-          </div>
-          <div>
-            <h1 className="text-xl font-bold text-white">
-              Repuestos Motos &amp; Autos
-            </h1>
-            <p className="text-sm text-slate-400">
-              Gestión Comercial y Mostrador
-            </p>
-          </div>
+    <main className="flex min-h-screen bg-[#fafaf8]">
+      <section className="relative hidden w-1/2 flex-col justify-between overflow-hidden bg-[#12232c] p-12 text-white md:flex xl:p-14">
+        <div className="pointer-events-none absolute -right-36 top-24 h-80 w-80 rounded-full bg-[#1d3943]" />
+        <div className="pointer-events-none absolute -bottom-48 right-[-6rem] h-[34rem] w-[34rem] rounded-full border-[4rem] border-[#1d3943]" />
+        <div className="relative z-10 flex items-center gap-3">
+          <span className="flex h-11 w-11 items-center justify-center rounded-xl bg-[#5ac9c5] text-[#12232c]">
+            <Wrench className="h-6 w-6" />
+          </span>
+          <span>
+            <span className="block text-lg font-bold">Repuestos</span>
+            <span className="text-sm text-[#9daeb4]">Motos y Autos</span>
+          </span>
         </div>
-
-        {error && (
-          <div
-            role="alert"
-            className="mb-4 flex items-center gap-2 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2.5 text-sm text-red-300"
-          >
-            <AlertCircle className="h-4 w-4 shrink-0" />
-            <span>{error}</span>
-          </div>
-        )}
-
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <label className="block text-sm font-medium text-slate-300">
-            Correo electrónico
-            <span className="relative mt-1.5 block">
-              <Mail className="absolute left-3 top-3 h-4 w-4 text-slate-500" />
-              <input
-                type="email"
-                required
-                autoComplete="username"
-                value={email}
-                onChange={(event) => setEmail(event.target.value)}
-                placeholder="usuario@repuestos.com"
-                className="w-full rounded-lg border border-slate-800 bg-slate-950 py-2 pl-10 pr-3 text-sm text-white placeholder-slate-500 focus:border-amber-500 focus:outline-none"
-              />
-            </span>
-          </label>
-
-          <label className="block text-sm font-medium text-slate-300">
-            Contraseña
-            <span className="relative mt-1.5 block">
-              <Lock className="absolute left-3 top-3 h-4 w-4 text-slate-500" />
-              <input
-                type="password"
-                required
-                autoComplete="current-password"
-                value={password}
-                onChange={(event) => setPassword(event.target.value)}
-                placeholder="Contraseña"
-                className="w-full rounded-lg border border-slate-800 bg-slate-950 py-2 pl-10 pr-3 text-sm text-white placeholder-slate-500 focus:border-amber-500 focus:outline-none"
-              />
-            </span>
-          </label>
-
-          <button
-            type="submit"
-            disabled={loading}
-            className="w-full rounded-lg bg-amber-500 py-2.5 text-sm font-semibold text-slate-950 transition hover:bg-amber-400 disabled:opacity-50"
-          >
-            {loading ? "Ingresando..." : "Iniciar sesión"}
-          </button>
-        </form>
-
-        <div className="mt-6 border-t border-slate-800 pt-5">
-          <p className="mb-2.5 text-center text-xs text-slate-400">
-            Accesos de prueba (clave: 123456)
+        <div className="relative z-10 max-w-xl">
+          <h2 className="text-4xl font-bold leading-tight tracking-tight xl:text-5xl">
+            Facturá, controlá el stock y llevá las cuentas corrientes desde el mostrador.
+          </h2>
+          <p className="mt-5 max-w-lg text-base leading-relaxed text-[#aebbc0]">
+            Cada venta actualiza las existencias en el mismo acto y deja su
+            movimiento registrado.
           </p>
-          <div className="grid grid-cols-2 gap-2">
-            <button
-              type="button"
-              onClick={() => fillCredentials("admin")}
-              className="rounded-lg border border-slate-700 bg-slate-800/60 px-3 py-2 text-xs text-slate-200 transition hover:bg-slate-800"
-            >
-              Encargado (Admin)
-            </button>
-            <button
-              type="button"
-              onClick={() => fillCredentials("vendedor")}
-              className="rounded-lg border border-slate-700 bg-slate-800/60 px-3 py-2 text-xs text-slate-200 transition hover:bg-slate-800"
-            >
-              Mostrador (Vendedor)
-            </button>
+        </div>
+        <p className="relative z-10 text-sm text-[#9daeb4]">
+          San Miguel de Tucumán · Gestión comercial de repuestos
+        </p>
+      </section>
+
+      <section className="flex min-h-screen flex-1 items-center justify-center px-6 py-10 md:px-12">
+        <div className="w-full max-w-md">
+          <div className="mb-10 flex items-center gap-3 md:hidden">
+            <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-[#5ac9c5] text-[#12232c]">
+              <Wrench className="h-5 w-5" />
+            </span>
+            <span>
+              <span className="block font-bold text-slate-900">Repuestos</span>
+              <span className="text-xs text-slate-500">Motos y Autos</span>
+            </span>
           </div>
+          <h1 className="text-3xl font-bold tracking-tight text-slate-900">
+            Iniciar sesión
+          </h1>
+          <p className="mt-2 text-sm text-slate-500">
+            Ingresá con tu email y contraseña.
+          </p>
+
+          {error && (
+            <div
+              role="alert"
+              className="mt-6 flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2.5 text-sm text-red-700"
+            >
+              <AlertCircle className="h-4 w-4 shrink-0" />
+              <span>{error}</span>
+            </div>
+          )}
+
+          <form onSubmit={handleSubmit} className="mt-8 space-y-5">
+            <label className="block text-sm font-medium text-slate-800">
+              Email
+              <span className="relative mt-2 block">
+                <Mail className="absolute left-3 top-3 h-4 w-4 text-slate-400" />
+                <input
+                  type="email"
+                  required
+                  autoComplete="username"
+                  value={email}
+                  onChange={(event) => setEmail(event.target.value)}
+                  placeholder="usuario@repuestos.com"
+                  className="w-full rounded-lg border border-slate-300 bg-white py-2.5 pl-10 pr-3 text-sm text-slate-900 outline-none placeholder:text-slate-400 focus:border-[#08747e] focus:ring-2 focus:ring-[#08747e]/15"
+                />
+              </span>
+            </label>
+
+            <label className="block text-sm font-medium text-slate-800">
+              Contraseña
+              <span className="relative mt-2 block">
+                <LockKeyhole className="absolute left-3 top-3 h-4 w-4 text-slate-400" />
+                <input
+                  type="password"
+                  required
+                  autoComplete="current-password"
+                  value={password}
+                  onChange={(event) => setPassword(event.target.value)}
+                  placeholder="Contraseña"
+                  className="w-full rounded-lg border border-slate-300 bg-white py-2.5 pl-10 pr-3 text-sm text-slate-900 outline-none placeholder:text-slate-400 focus:border-[#08747e] focus:ring-2 focus:ring-[#08747e]/15"
+                />
+              </span>
+            </label>
+
+            <button
+              type="submit"
+              disabled={loading}
+              className="flex w-full items-center justify-center gap-2 rounded-lg bg-[#08747e] py-3 text-sm font-semibold text-white transition hover:bg-[#07626b] disabled:opacity-50"
+            >
+              {loading ? "Ingresando..." : "Ingresar"}
+              {!loading && <ArrowRight className="h-4 w-4" />}
+            </button>
+          </form>
         </div>
       </section>
     </main>

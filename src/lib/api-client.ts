@@ -43,6 +43,10 @@ export async function apiFetch<T>(
     throw new ApiRequestError("La sesión expiró.", 401, "NO_AUTENTICADO");
   }
 
+  if (response.status === 204) {
+    return undefined as T;
+  }
+
   let json: unknown;
   try {
     json = await response.json();
@@ -83,8 +87,11 @@ export async function apiFetch<T>(
 }
 
 export function pesosAcentavos(value: string): number | null {
-  if (!/^\d+(?:[.,]\d{1,2})?$/.test(value.trim())) return null;
-  const amount = Number(value.replace(",", "."));
-  if (!Number.isFinite(amount)) return null;
-  return Math.round(amount * 100);
+  const normalized = value.trim().replace(",", ".");
+  const match = /^(\d+)(?:\.(\d{1,2}))?$/.exec(normalized);
+  if (!match) return null;
+
+  const centavos =
+    Number(match[1]) * 100 + Number((match[2] ?? "").padEnd(2, "0"));
+  return Number.isSafeInteger(centavos) ? centavos : null;
 }

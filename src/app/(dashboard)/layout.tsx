@@ -1,8 +1,7 @@
 import type { ReactNode } from "react";
 import { Suspense } from "react";
 import { redirect } from "next/navigation";
-import { SessionProvider } from "@/components/session-provider";
-import { Sidebar } from "@/components/sidebar";
+import { AppShell } from "@/components/layout/app-shell";
 import { obtenerUsuarioActual } from "@/lib/session";
 
 async function AuthenticatedDashboard({
@@ -13,16 +12,7 @@ async function AuthenticatedDashboard({
   const user = await obtenerUsuarioActual();
   if (!user) redirect("/login");
 
-  return (
-    <SessionProvider user={user}>
-      <div className="flex min-h-screen bg-slate-950 text-slate-100 max-md:flex-col">
-        <Sidebar user={user} />
-        <main className="min-w-0 flex-1 overflow-x-auto p-6 max-sm:p-4">
-          {children}
-        </main>
-      </div>
-    </SessionProvider>
-  );
+  return <AppShell user={user}>{children}</AppShell>;
 }
 
 export default function DashboardLayout({ children }: { children: ReactNode }) {

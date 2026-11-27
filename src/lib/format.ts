@@ -10,6 +10,19 @@ export function formatearMoneda(centavos: number): string {
   return `$ ${formateado}`;
 }
 
+/** Convierte centavos enteros a una cadena decimal para campos de importe. */
+export function centavosAValorInput(centavos: number): string {
+  if (!Number.isSafeInteger(centavos)) {
+    throw new RangeError("El importe debe ser un entero seguro de centavos.");
+  }
+
+  const absoluto = Math.abs(centavos);
+  const signo = centavos < 0 ? "-" : "";
+  const pesos = Math.floor(absoluto / 100);
+  const centimos = String(absoluto % 100).padStart(2, "0");
+  return `${signo}${pesos}.${centimos}`;
+}
+
 /** Formatea punto de venta y número a "0001-00000001" */
 export function formatearNumeroFactura(
   puntoVenta: number,

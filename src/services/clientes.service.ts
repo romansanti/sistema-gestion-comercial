@@ -1,12 +1,35 @@
-import { and, desc, eq, like, or, sql, type SQL } from "drizzle-orm";
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  inArray,
+  like,
+  ne,
+  or,
+  sql,
+  type SQL,
+} from "drizzle-orm";
 import { db } from "@/db";
-import { clientes, movimientosCuenta, pagos } from "@/db/schema";
+import {
+  clientes,
+  facturas,
+  movimientosCuenta,
+} from "@/db/schema";
 import { ApiError } from "@/lib/errors";
-import { ahoraIsoUtc, formatearNumeroRecibo } from "@/lib/format";
+import { ahoraIsoUtc } from "@/lib/format";
+import {
+  actualizarClienteSchema,
+  clienteIdSchema,
+  cuentaClienteSchema,
+  crearClienteSchema,
+  listarClientesSchema,
+} from "@/lib/schemas/clientes";
+import type { UsuarioSesion } from "@/lib/session";
 
 type DbReader = Pick<typeof db, "select">;
 
-/** Calcula el saldo actual de un cliente (débitos - créditos) en centavos */
+/** RF-CC1: Calcula saldo únicamente desde movimientos débito/crédito. */
 export async function calcularSaldoCliente(
   clienteId: number,
   txOrDb: DbReader = db,
@@ -21,42 +44,127 @@ export async function calcularSaldoCliente(
   return Number(res?.saldo ?? 0);
 }
 
-export async function listarClientes(filtros?: {
-  q?: string;
-  soloCuentaCorriente?: boolean;
-  soloActivos?: boolean;
-}) {
+/** RF-CC1: Agrupa los saldos derivados de movimientos para varios clientes. */
+export async function obtenerSaldosClientes(
+  clienteIds?: number[],
+): Promise<Map<number, number>> {
+  if (clienteIds?.length === 0) return new Map();
+
+  const filas = await db
+    .select({
+      clienteId: movimientosCuenta.clienteId,
+      saldo: sql<number>`coalesce(sum(case when ${movimientosCuenta.tipo} = 'debito' then ${movimientosCuenta.importe} else -${movimientosCuenta.importe} end), 0)`,
+    })
+    .from(movimientosCuenta)
+    .where(
+      clienteIds?.length
+        ? inArray(movimientosCuenta.clienteId, clienteIds)
+        : undefined,
+    )
+    .groupBy(movimientosCuenta.clienteId);
+
+  return new Map(filas.map((fila) => [fila.clienteId, Number(fila.saldo)]));
+}
+
+function normalizarDocumento(value: string): string {
+  return value.replace(/[.\-\s]/g, "").toLowerCase();
+}
+
+function fechaLocalIso(isoUtc: string): string {
+  return new Intl.DateTimeFormat("sv-SE", {
+    timeZone: "America/Argentina/Buenos_Aires",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date(isoUtc));
+}
+
+function exigirAdmin(usuario: UsuarioSesion): void {
+  if (usuario.rol !== "admin") {
+    throw new ApiError(
+      403,
+      "SIN_PERMISO",
+      "Esta acción requiere permisos de administrador.",
+    );
+  }
+}
+
+/** RF-CC2: Lista clientes con búsqueda normalizada, deuda y paginación. */
+export async function listarClientes(_usuario: UsuarioSesion, input: unknown) {
+  const filtros = listarClientesSchema.parse(input);
   const condiciones: SQL[] = [];
 
-  if (filtros?.soloActivos) {
-    condiciones.push(eq(clientes.activo, true));
+  const cuentaCorriente = filtros.cuentaCorriente;
+  const activo = filtros.activo ?? filtros.activos;
+  if (cuentaCorriente !== undefined) {
+    condiciones.push(eq(clientes.cuentaCorriente, cuentaCorriente));
   }
-  if (filtros?.soloCuentaCorriente) {
-    condiciones.push(eq(clientes.cuentaCorriente, true));
-  }
-  if (filtros?.q && filtros.q.trim() !== "") {
-    const term = `%${filtros.q.trim()}%`;
-    const search = or(like(clientes.nombre, term), like(clientes.nroDoc, term));
+  if (activo !== undefined) condiciones.push(eq(clientes.activo, activo));
+  if (filtros.q) {
+    const rawTerm = filtros.q.trim();
+    const term = `%${rawTerm}%`;
+    const documentoNormalizado = normalizarDocumento(rawTerm);
+    const search = documentoNormalizado
+      ? or(
+          like(clientes.nombre, term),
+          sql`lower(replace(replace(replace(${clientes.nroDoc}, '.', ''), '-', ''), ' ', '')) like ${`%${documentoNormalizado}%`}`,
+        )
+      : like(clientes.nombre, term);
     if (search) condiciones.push(search);
   }
 
-  const lista = await db
+  const rows = await db
     .select()
     .from(clientes)
-    .where(condiciones.length > 0 ? and(...condiciones) : undefined)
-    .orderBy(clientes.nombre);
-
-  return Promise.all(
-    lista.map(async (cliente) => ({
-      ...cliente,
-      saldoActual: cliente.cuentaCorriente
-        ? await calcularSaldoCliente(cliente.id)
-        : 0,
-    })),
+    .where(condiciones.length ? and(...condiciones) : undefined);
+  const saldos = await obtenerSaldosClientes(rows.map((cliente) => cliente.id));
+  const withBalances = rows.map((cliente) => ({
+    ...cliente,
+    saldoActual: saldos.get(cliente.id) ?? 0,
+  }));
+  const filtered = withBalances.filter(
+    (cliente) => !filtros.conDeuda || cliente.saldoActual > 0,
   );
+  filtered.sort((a, b) =>
+    filtros.ordenar === "saldo"
+      ? b.saldoActual - a.saldoActual || a.nombre.localeCompare(b.nombre, "es")
+      : a.nombre.localeCompare(b.nombre, "es"),
+  );
+
+  const offset = (filtros.page - 1) * filtros.pageSize;
+  const total = filtered.length;
+  return {
+    items: filtered.slice(offset, offset + filtros.pageSize),
+    pagination: {
+      page: filtros.page,
+      pageSize: filtros.pageSize,
+      total,
+      totalPages: Math.ceil(total / filtros.pageSize),
+    },
+    totalAdeudado: filtered.reduce(
+      (sum, cliente) => sum + Math.max(cliente.saldoActual, 0),
+      0,
+    ),
+    creditoDisponibleTotal: filtered.reduce(
+      (sum, cliente) =>
+        sum +
+        (cliente.cuentaCorriente
+          ? Math.max(
+              0,
+              (cliente.limiteCredito ?? 0) - Math.max(cliente.saldoActual, 0),
+            )
+          : 0),
+      0,
+    ),
+  };
 }
 
-export async function obtenerClienteDetalle(id: number) {
+/** RF-CC3: Obtiene ficha, saldo derivado y últimas facturas del cliente. */
+export async function obtenerClienteDetalle(
+  _usuario: UsuarioSesion,
+  input: unknown,
+) {
+  const { id } = clienteIdSchema.parse(input);
   const [cliente] = await db
     .select()
     .from(clientes)
@@ -68,30 +176,33 @@ export async function obtenerClienteDetalle(id: number) {
   }
 
   const saldoActual = await calcularSaldoCliente(id);
-  const movimientos = await db
-    .select()
-    .from(movimientosCuenta)
-    .where(eq(movimientosCuenta.clienteId, id))
-    .orderBy(desc(movimientosCuenta.id))
-    .limit(100);
+  const ultimasFacturas = await db
+    .select({
+      id: facturas.id,
+      puntoVenta: facturas.puntoVenta,
+      numero: facturas.numero,
+      fecha: facturas.fecha,
+      total: facturas.total,
+      formaPago: facturas.formaPago,
+      estado: facturas.estado,
+    })
+    .from(facturas)
+    .where(eq(facturas.clienteId, id))
+    .orderBy(desc(facturas.id))
+    .limit(10);
 
-  return { ...cliente, saldoActual, movimientos };
+  return { ...cliente, saldoActual, ultimasFacturas };
 }
 
-export async function crearCliente(data: {
-  tipoDoc: "DNI" | "CUIT";
-  nroDoc: string;
-  nombre: string;
-  domicilio?: string | null;
-  telefono?: string | null;
-  email?: string | null;
-  cuentaCorriente: boolean;
-  limiteCredito?: number | null;
-}) {
+/** RF-CC4: Registra un cliente sin borrar su historial comercial. */
+export async function crearCliente(_usuario: UsuarioSesion, input: unknown) {
+  const data = crearClienteSchema.parse(input);
   const [duplicado] = await db
     .select({ id: clientes.id })
     .from(clientes)
-    .where(eq(clientes.nroDoc, data.nroDoc))
+    .where(
+      sql`lower(replace(replace(replace(${clientes.nroDoc}, '.', ''), '-', ''), ' ', '')) = ${normalizarDocumento(data.nroDoc)}`,
+    )
     .limit(1);
 
   if (duplicado) {
@@ -120,20 +231,14 @@ export async function crearCliente(data: {
   return creado;
 }
 
+/** RF-CC5: Actualiza o desactiva clientes; bloquea bajas con saldo pendiente. */
 export async function actualizarCliente(
-  id: number,
-  data: Partial<{
-    tipoDoc: "DNI" | "CUIT";
-    nroDoc: string;
-    nombre: string;
-    domicilio: string | null;
-    telefono: string | null;
-    email: string | null;
-    cuentaCorriente: boolean;
-    limiteCredito: number | null;
-    activo: boolean;
-  }>,
+  usuario: UsuarioSesion,
+  input: unknown,
 ) {
+  const { id, cambios } = actualizarClienteSchema.parse(input);
+  exigirAdmin(usuario);
+
   const [actual] = await db
     .select()
     .from(clientes)
@@ -144,58 +249,47 @@ export async function actualizarCliente(
     throw new ApiError(404, "NO_ENCONTRADO", "Cliente no encontrado.");
   }
 
-  if (data.nroDoc && data.nroDoc !== actual.nroDoc) {
+  if (cambios.nroDoc && cambios.nroDoc !== actual.nroDoc) {
     const [duplicado] = await db
       .select({ id: clientes.id })
       .from(clientes)
-      .where(eq(clientes.nroDoc, data.nroDoc))
+      .where(
+        and(
+          sql`lower(replace(replace(replace(${clientes.nroDoc}, '.', ''), '-', ''), ' ', '')) = ${normalizarDocumento(cambios.nroDoc)}`,
+          ne(clientes.id, id),
+        ),
+      )
       .limit(1);
-
     if (duplicado) {
       throw new ApiError(
         409,
         "DOCUMENTO_DUPLICADO",
-        `Ya existe otro cliente con el documento ${data.nroDoc}.`,
+        `Ya existe otro cliente con el documento ${cambios.nroDoc}.`,
       );
     }
   }
 
   const saldo = await calcularSaldoCliente(id);
-
-  if (data.activo === false && saldo > 0) {
+  if (
+    saldo !== 0 &&
+    (cambios.activo === false || cambios.cuentaCorriente === false)
+  ) {
     throw new ApiError(
-      409,
+      422,
       "SALDO_PENDIENTE",
-      "No se puede desactivar un cliente que tiene deuda pendiente en cuenta corriente.",
+      "No se puede desactivar al cliente ni quitar su cuenta corriente mientras tenga saldo pendiente.",
     );
   }
 
-  if (data.cuentaCorriente === false && saldo > 0) {
-    throw new ApiError(
-      409,
-      "SALDO_PENDIENTE",
-      "No se puede quitar la cuenta corriente mientras el cliente tenga saldo pendiente.",
-    );
-  }
-
+  const cuentaCorriente =
+    cambios.cuentaCorriente ?? actual.cuentaCorriente;
   const [actualizado] = await db
     .update(clientes)
     .set({
-      ...(data.tipoDoc !== undefined ? { tipoDoc: data.tipoDoc } : {}),
-      ...(data.nroDoc !== undefined ? { nroDoc: data.nroDoc } : {}),
-      ...(data.nombre !== undefined ? { nombre: data.nombre } : {}),
-      ...(data.domicilio !== undefined
-        ? { domicilio: data.domicilio || null }
-        : {}),
-      ...(data.telefono !== undefined ? { telefono: data.telefono || null } : {}),
-      ...(data.email !== undefined ? { email: data.email || null } : {}),
-      ...(data.cuentaCorriente !== undefined
-        ? { cuentaCorriente: data.cuentaCorriente }
-        : {}),
-      ...(data.limiteCredito !== undefined
-        ? { limiteCredito: data.limiteCredito }
-        : {}),
-      ...(data.activo !== undefined ? { activo: data.activo } : {}),
+      ...cambios,
+      limiteCredito: cuentaCorriente
+        ? (cambios.limiteCredito ?? actual.limiteCredito ?? 0)
+        : null,
     })
     .where(eq(clientes.id, id))
     .returning();
@@ -203,73 +297,43 @@ export async function actualizarCliente(
   return actualizado;
 }
 
-export async function registrarPagoCuentaCorriente(
-  data: {
-    clienteId: number;
-    importe: number;
-    medio: "efectivo" | "transferencia" | "tarjeta_debito";
-    observacion?: string | null;
-  },
-  usuarioId: number,
+/** RF-CC6: Devuelve el mayor y saldo acumulado de cada movimiento cronológico. */
+export async function obtenerCuentaCliente(
+  _usuario: UsuarioSesion,
+  input: unknown,
 ) {
-  return db.transaction(async (tx) => {
-    const [cliente] = await tx
-      .select()
-      .from(clientes)
-      .where(eq(clientes.id, data.clienteId))
-      .limit(1);
+  const filtros = cuentaClienteSchema.parse(input);
+  const [cliente] = await db
+    .select({ id: clientes.id, nombre: clientes.nombre })
+    .from(clientes)
+    .where(eq(clientes.id, filtros.id))
+    .limit(1);
 
-    if (!cliente) {
-      throw new ApiError(404, "NO_ENCONTRADO", "Cliente no encontrado.");
-    }
-    if (!cliente.cuentaCorriente) {
-      throw new ApiError(
-        422,
-        "CUENTA_CORRIENTE_NO_HABILITADA",
-        "Este cliente no opera con cuenta corriente.",
-      );
-    }
+  if (!cliente) {
+    throw new ApiError(404, "NO_ENCONTRADO", "Cliente no encontrado.");
+  }
 
-    const saldoActual = await calcularSaldoCliente(cliente.id, tx);
-    if (data.importe > saldoActual) {
-      throw new ApiError(
-        422,
-        "PAGO_SUPERA_DEUDA",
-        "El pago ingresado supera la deuda actual del cliente.",
-      );
-    }
+  const movimientos = await db
+    .select()
+    .from(movimientosCuenta)
+    .where(eq(movimientosCuenta.clienteId, filtros.id))
+    .orderBy(asc(movimientosCuenta.fecha), asc(movimientosCuenta.id));
 
-    const [maxRecibo] = await tx
-      .select({ maxId: sql<number>`coalesce(max(${pagos.id}), 0)` })
-      .from(pagos);
-    const numeroRecibo = formatearNumeroRecibo(
-      1,
-      Number(maxRecibo?.maxId ?? 0) + 1,
-    );
-    const fecha = ahoraIsoUtc();
-
-    const [pago] = await tx
-      .insert(pagos)
-      .values({
-        numeroRecibo,
-        clienteId: cliente.id,
-        usuarioId,
-        fecha,
-        importe: data.importe,
-        medio: data.medio,
-        observacion: data.observacion || null,
-      })
-      .returning();
-
-    await tx.insert(movimientosCuenta).values({
-      clienteId: cliente.id,
-      tipo: "credito",
-      importe: data.importe,
-      fecha,
-      descripcion: `Recibo ${numeroRecibo}`,
-      pagoId: pago.id,
-    });
-
-    return { pago, nuevoSaldo: saldoActual - data.importe };
+  let saldoAcumulado = 0;
+  const libro = movimientos.map((movimiento) => {
+    const saldoAnterior = saldoAcumulado;
+    saldoAcumulado +=
+      movimiento.tipo === "debito" ? movimiento.importe : -movimiento.importe;
+    return { ...movimiento, saldoAnterior, saldoAcumulado };
   });
+  const filtrados = libro.filter((movimiento) => {
+    const fecha = fechaLocalIso(movimiento.fecha);
+    return (
+      (!filtros.desde || fecha >= filtros.desde) &&
+      (!filtros.hasta || fecha <= filtros.hasta)
+    );
+  });
+
+  return { cliente, saldoActual: saldoAcumulado, movimientos: filtrados };
 }
+

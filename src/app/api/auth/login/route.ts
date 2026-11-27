@@ -5,7 +5,7 @@ import { loginUsuario } from "@/services/auth.service";
 
 export const POST = withPublic(async (req) => {
   const body = await parseJsonBody(req);
-  const usuario = await loginUsuario(body);
+  const usuario = await loginUsuario(null, body);
   await crearCookieSesion(usuario.id);
   return NextResponse.json(usuario, { status: 200 });
 });

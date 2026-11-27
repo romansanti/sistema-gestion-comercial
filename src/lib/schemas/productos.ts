@@ -1,29 +1,11 @@
 import { z } from "zod";
 
-export const crearCategoriaSchema = z
-  .object({
-    nombre: z
-      .string()
-      .trim()
-      .min(2, "El nombre debe tener al menos 2 caracteres.")
-      .max(60, "El nombre no puede superar los 60 caracteres."),
-  })
-  .strict();
-
-export const actualizarCategoriaSchema = z
-  .object({
-    nombre: z
-      .string()
-      .trim()
-      .min(2, "El nombre debe tener al menos 2 caracteres.")
-      .max(60, "El nombre no puede superar los 60 caracteres.")
-      .optional(),
-    activa: z.boolean().optional(),
-  })
-  .strict()
-  .refine((data) => data.nombre !== undefined || data.activa !== undefined, {
-    message: "Ingresá al menos un campo para actualizar.",
-  });
+const booleanQuery = z
+  .enum(["true", "false"])
+  .optional()
+  .transform((value) =>
+    value === undefined ? undefined : value === "true",
+  );
 
 export const crearProductoSchema = z
   .object({
@@ -85,18 +67,26 @@ export const actualizarProductoSchema = z
     message: "Ingresá al menos un campo para actualizar.",
   });
 
-export const movimientoStockSchema = z
+export const listarProductosSchema = z
   .object({
-    tipo: z.enum(["ingreso", "egreso"]),
-    cantidad: z
-      .number()
-      .int()
-      .positive("La cantidad debe ser mayor a 0."),
-    motivo: z
-      .string()
-      .trim()
-      .min(3, "Indicá un motivo válido.")
-      .max(120),
-    observacion: z.string().trim().max(250).optional(),
+    q: z.string().trim().optional(),
+    categoriaId: z.coerce.number().int().positive().optional(),
+    activo: booleanQuery,
+    activos: booleanQuery,
+    bajoMinimo: booleanQuery,
+    stockBajo: booleanQuery,
+    page: z.coerce.number().int().positive().default(1),
+    pageSize: z.coerce.number().int().min(1).max(100).default(100),
+  })
+  .strict();
+
+export const obtenerProductoSchema = z
+  .object({ id: z.coerce.number().int().positive() })
+  .strict();
+
+export const actualizarProductoInputSchema = z
+  .object({
+    id: z.coerce.number().int().positive(),
+    cambios: actualizarProductoSchema,
   })
   .strict();

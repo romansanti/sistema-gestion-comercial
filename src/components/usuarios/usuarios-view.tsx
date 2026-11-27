@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState, type FormEvent } from "react";
-import { AlertCircle, Plus, UserCheck, UserX } from "lucide-react";
+import { AlertCircle, Pencil, Plus, UserCheck, UserX } from "lucide-react";
 import { useSession } from "@/components/session-provider";
 import { Modal } from "@/components/ui/modal";
 import { apiFetch } from "@/lib/api-client";
@@ -15,10 +15,20 @@ type User = {
   createdAt: string;
 };
 
+type UserList = {
+  items: User[];
+  pagination: {
+    page: number;
+    pageSize: number;
+    total: number;
+    totalPages: number;
+  };
+};
+
 const inputClass =
   "w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2.5 text-sm text-slate-100 outline-none focus:border-amber-500";
 
-export default function UsuariosClientPage() {
+export default function UsuariosView() {
   const session = useSession();
   const [users, setUsers] = useState<User[]>([]);
   const [loading, setLoading] = useState(true);
@@ -26,6 +36,21 @@ export default function UsuariosClientPage() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
+  const [resetTarget, setResetTarget] = useState<User | null>(null);
+  const [resetPassword, setResetPassword] = useState("");
+  const [editTarget, setEditTarget] = useState<User | null>(null);
+  const [editForm, setEditForm] = useState({
+    nombre: "",
+    email: "",
+    rol: "vendedor" as "admin" | "vendedor",
+  });
+  const [page, setPage] = useState(1);
+  const [pagination, setPagination] = useState<UserList["pagination"]>({
+    page: 1,
+    pageSize: 10,
+    total: 0,
+    totalPages: 0,
+  });
   const [form, setForm] = useState({
     nombre: "",
     email: "",
@@ -34,8 +59,12 @@ export default function UsuariosClientPage() {
   });
 
   const refresh = useCallback(async () => {
-    setUsers(await apiFetch<User[]>("/api/usuarios"));
-  }, []);
+    const result = await apiFetch<UserList>(
+      `/api/usuarios?page=${page}&pageSize=10`,
+    );
+    setUsers(result.items);
+    setPagination(result.pagination);
+  }, [page]);
 
   useEffect(() => {
     const timeout = window.setTimeout(() => {
@@ -51,6 +80,57 @@ export default function UsuariosClientPage() {
     }, 0);
     return () => window.clearTimeout(timeout);
   }, [refresh]);
+
+  async function resetUserPassword(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!resetTarget) return;
+    setError(null);
+    setBusy(true);
+    try {
+      await apiFetch<{ id: number }>(
+        `/api/usuarios/${resetTarget.id}/reset-password`,
+        {
+          method: "POST",
+          body: JSON.stringify({ password: resetPassword }),
+        },
+      );
+      setResetTarget(null);
+      setResetPassword("");
+      setNotice(`Se restableció la contraseña de ${resetTarget.nombre}.`);
+    } catch (cause) {
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : "No se pudo restablecer la contraseña.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveUserChanges(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!editTarget) return;
+    setError(null);
+    setBusy(true);
+    try {
+      const updated = await apiFetch<User>(`/api/usuarios/${editTarget.id}`, {
+        method: "PATCH",
+        body: JSON.stringify(editForm),
+      });
+      setUsers((current) =>
+        current.map((item) => (item.id === updated.id ? updated : item)),
+      );
+      setEditTarget(null);
+      setNotice(`Se actualizaron los datos de ${updated.nombre}.`);
+    } catch (cause) {
+      setError(
+        cause instanceof Error ? cause.message : "No se pudo editar el usuario.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function createUser(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -165,14 +245,14 @@ export default function UsuariosClientPage() {
           </div>
         </div>
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[650px] text-left text-sm">
+          <table className="w-full min-w-[760px] text-left text-sm">
             <thead className="bg-slate-950 text-xs uppercase text-slate-500">
               <tr>
                 <th className="px-5 py-3">Nombre</th>
                 <th className="px-5 py-3">Email</th>
                 <th className="px-5 py-3">Rol</th>
                 <th className="px-5 py-3">Acceso</th>
-                <th className="px-5 py-3 text-right">Acción</th>
+                <th className="px-5 py-3 text-right">Acciones</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-800">
@@ -203,28 +283,54 @@ export default function UsuariosClientPage() {
                     </span>
                   </td>
                   <td className="px-5 py-4 text-right">
-                    <button
-                      type="button"
-                      onClick={() => changeStatus(user)}
-                      disabled={busy || user.id === session.id}
-                      title={
-                        user.id === session.id
-                          ? "No podés desactivar tu propio usuario."
-                          : undefined
-                      }
-                      className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium disabled:opacity-50 ${
-                        user.activo
-                          ? "border-red-500/30 text-red-300 hover:bg-red-500/10"
-                          : "border-emerald-500/30 text-emerald-300 hover:bg-emerald-500/10"
-                      }`}
-                    >
-                      {user.activo ? (
-                        <UserX className="h-3.5 w-3.5" />
-                      ) : (
-                        <UserCheck className="h-3.5 w-3.5" />
-                      )}
-                      {user.activo ? "Desactivar" : "Activar"}
-                    </button>
+                    <div className="flex justify-end gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditTarget(user);
+                          setEditForm({
+                            nombre: user.nombre,
+                            email: user.email,
+                            rol: user.rol,
+                          });
+                        }}
+                        disabled={busy}
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-slate-600 px-3 py-1.5 text-xs text-slate-200 disabled:opacity-50"
+                      >
+                        <Pencil className="h-3.5 w-3.5" />
+                        Editar
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setResetTarget(user)}
+                        disabled={busy || user.id === session.id}
+                        className="rounded-lg border border-slate-600 px-3 py-1.5 text-xs text-slate-200 disabled:opacity-50"
+                      >
+                        Restablecer clave
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => changeStatus(user)}
+                        disabled={busy || user.id === session.id}
+                        title={
+                          user.id === session.id
+                            ? "No podés desactivar tu propio usuario."
+                            : undefined
+                        }
+                        className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium disabled:opacity-50 ${
+                          user.activo
+                            ? "border-red-500/30 text-red-300 hover:bg-red-500/10"
+                            : "border-emerald-500/30 text-emerald-300 hover:bg-emerald-500/10"
+                        }`}
+                      >
+                        {user.activo ? (
+                          <UserX className="h-3.5 w-3.5" />
+                        ) : (
+                          <UserCheck className="h-3.5 w-3.5" />
+                        )}
+                        {user.activo ? "Desactivar" : "Activar"}
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -318,6 +424,138 @@ export default function UsuariosClientPage() {
               className="rounded-lg bg-amber-500 px-4 py-2.5 text-sm font-semibold text-slate-950 hover:bg-amber-400 disabled:opacity-50"
             >
               {busy ? "Creando..." : "Crear usuario"}
+            </button>
+          </div>
+        </form>
+      </Modal>
+
+      <div className="flex items-center justify-between gap-3 text-sm text-slate-400">
+        <span>
+          {pagination.total} usuarios · Página {pagination.page} de{" "}
+          {Math.max(pagination.totalPages, 1)}
+        </span>
+        <div className="flex gap-2">
+          <button
+            type="button"
+            disabled={page <= 1 || loading}
+            onClick={() => setPage((current) => current - 1)}
+            className="rounded-lg border border-slate-700 px-3 py-2 disabled:opacity-40"
+          >
+            Anterior
+          </button>
+          <button
+            type="button"
+            disabled={page >= pagination.totalPages || loading}
+            onClick={() => setPage((current) => current + 1)}
+            className="rounded-lg border border-slate-700 px-3 py-2 disabled:opacity-40"
+          >
+            Siguiente
+          </button>
+        </div>
+      </div>
+
+      <Modal
+        open={resetTarget !== null}
+        title={`Restablecer contraseña${resetTarget ? `: ${resetTarget.nombre}` : ""}`}
+        onClose={() => {
+          setResetTarget(null);
+          setResetPassword("");
+        }}
+        className="max-w-xl"
+      >
+        <form onSubmit={resetUserPassword} className="space-y-4">
+          <label className="block text-sm font-medium text-slate-300">
+            Nueva contraseña (mínimo 8 caracteres)
+            <input
+              type="password"
+              minLength={8}
+              required
+              autoComplete="new-password"
+              value={resetPassword}
+              onChange={(event) => setResetPassword(event.target.value)}
+              className={`${inputClass} mt-1.5`}
+            />
+          </label>
+          <div className="flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => setResetTarget(null)}
+              className="rounded-lg border border-slate-700 px-4 py-2.5 text-sm text-slate-300"
+            >
+              Cancelar
+            </button>
+            <button
+              type="submit"
+              disabled={busy}
+              className="rounded-lg bg-amber-500 px-4 py-2.5 text-sm font-semibold text-slate-950 disabled:opacity-50"
+            >
+              {busy ? "Guardando..." : "Actualizar contraseña"}
+            </button>
+          </div>
+        </form>
+      </Modal>
+
+      <Modal
+        open={editTarget !== null}
+        title={`Editar usuario${editTarget ? `: ${editTarget.nombre}` : ""}`}
+        onClose={() => setEditTarget(null)}
+        className="max-w-xl"
+      >
+        <form onSubmit={saveUserChanges} className="space-y-4">
+          <label className="block text-sm font-medium text-slate-300">
+            Nombre
+            <input
+              required
+              minLength={3}
+              value={editForm.nombre}
+              onChange={(event) =>
+                setEditForm({ ...editForm, nombre: event.target.value })
+              }
+              className={`${inputClass} mt-1.5`}
+            />
+          </label>
+          <label className="block text-sm font-medium text-slate-300">
+            Email
+            <input
+              required
+              type="email"
+              value={editForm.email}
+              onChange={(event) =>
+                setEditForm({ ...editForm, email: event.target.value })
+              }
+              className={`${inputClass} mt-1.5`}
+            />
+          </label>
+          <label className="block text-sm font-medium text-slate-300">
+            Rol
+            <select
+              value={editForm.rol}
+              onChange={(event) =>
+                setEditForm({
+                  ...editForm,
+                  rol: event.target.value as "admin" | "vendedor",
+                })
+              }
+              className={`${inputClass} mt-1.5`}
+            >
+              <option value="vendedor">Vendedor</option>
+              <option value="admin">Administrador</option>
+            </select>
+          </label>
+          <div className="flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => setEditTarget(null)}
+              className="rounded-lg border border-slate-700 px-4 py-2.5 text-sm text-slate-300"
+            >
+              Cancelar
+            </button>
+            <button
+              type="submit"
+              disabled={busy}
+              className="rounded-lg bg-amber-500 px-4 py-2.5 text-sm font-semibold text-slate-950 disabled:opacity-50"
+            >
+              {busy ? "Guardando..." : "Guardar cambios"}
             </button>
           </div>
         </form>

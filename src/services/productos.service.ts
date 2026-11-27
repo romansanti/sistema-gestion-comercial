@@ -1,36 +1,80 @@
-import { and, desc, eq, like, or, sql, type SQL } from "drizzle-orm";
+import {
+  and,
+  count,
+  desc,
+  eq,
+  gte,
+  like,
+  lte,
+  ne,
+  or,
+  sql,
+  type SQL,
+} from "drizzle-orm";
+import { z } from "zod";
 import { db } from "@/db";
-import { categorias, movimientosStock, productos, usuarios } from "@/db/schema";
+import {
+  categorias,
+  movimientosStock,
+  productos,
+  usuarios,
+} from "@/db/schema";
 import { ApiError } from "@/lib/errors";
-import { ahoraIsoUtc } from "@/lib/format";
+import {
+  actualizarProductoInputSchema,
+  crearProductoSchema,
+  listarProductosSchema,
+  obtenerProductoSchema,
+} from "@/lib/schemas/productos";
+import {
+  listarMovimientosStockSchema,
+  registrarMovimientoStockInputSchema,
+} from "@/lib/schemas/stock";
+import type { UsuarioSesion } from "@/lib/session";
+import { moverStock } from "./stock.service";
 
-export async function listarProductos(filtros?: {
-  q?: string;
-  categoriaId?: number;
-  soloActivos?: boolean;
-  stockBajo?: boolean;
-}) {
+function exigirAdmin(usuario: UsuarioSesion): void {
+  if (usuario.rol !== "admin") {
+    throw new ApiError(
+      403,
+      "SIN_PERMISO",
+      "Esta acción requiere permisos de administrador.",
+    );
+  }
+}
+
+/** RF-P1: Lista productos filtrados y paginados para el catálogo y el POS. */
+export async function listarProductos(_usuario: UsuarioSesion, input: unknown) {
+  const filtros = listarProductosSchema.parse(input);
   const condiciones: SQL[] = [];
 
-  if (filtros?.soloActivos) {
-    condiciones.push(eq(productos.activo, true));
+  const estadoActivo = filtros.activo ?? filtros.activos;
+  const stockBajo = filtros.bajoMinimo ?? filtros.stockBajo;
+  if (estadoActivo !== undefined) {
+    condiciones.push(eq(productos.activo, estadoActivo));
   }
-
-  if (filtros?.categoriaId !== undefined) {
+  if (filtros.categoriaId !== undefined) {
     condiciones.push(eq(productos.categoriaId, filtros.categoriaId));
   }
-
-  if (filtros?.stockBajo) {
+  if (stockBajo) {
     condiciones.push(sql`${productos.existencia} <= ${productos.stockMinimo}`);
   }
-
-  if (filtros?.q && filtros.q.trim() !== "") {
-    const term = `%${filtros.q.trim()}%`;
-    const search = or(like(productos.codigo, term), like(productos.descripcion, term));
+  if (filtros.q) {
+    const term = `%${filtros.q}%`;
+    const search = or(
+      like(productos.codigo, term),
+      like(productos.descripcion, term),
+    );
     if (search) condiciones.push(search);
   }
 
-  return db
+  const where = condiciones.length > 0 ? and(...condiciones) : undefined;
+  const offset = (filtros.page - 1) * filtros.pageSize;
+  const [totalRow] = await db
+    .select({ total: count() })
+    .from(productos)
+    .where(where);
+  const items = await db
     .select({
       id: productos.id,
       codigo: productos.codigo,
@@ -45,11 +89,29 @@ export async function listarProductos(filtros?: {
     })
     .from(productos)
     .innerJoin(categorias, eq(productos.categoriaId, categorias.id))
-    .where(condiciones.length > 0 ? and(...condiciones) : undefined)
-    .orderBy(productos.descripcion);
+    .where(where)
+    .orderBy(productos.descripcion)
+    .limit(filtros.pageSize)
+    .offset(offset);
+
+  const total = Number(totalRow?.total ?? 0);
+  return {
+    items,
+    pagination: {
+      page: filtros.page,
+      pageSize: filtros.pageSize,
+      total,
+      totalPages: Math.ceil(total / filtros.pageSize),
+    },
+  };
 }
 
-export async function obtenerProductoPorId(id: number) {
+/** RF-P2: Obtiene la ficha de producto con sus movimientos recientes. */
+export async function obtenerProductoPorId(
+  _usuario: UsuarioSesion,
+  input: unknown,
+) {
+  const { id } = obtenerProductoSchema.parse(input);
   const [producto] = await db
     .select({
       id: productos.id,
@@ -72,37 +134,15 @@ export async function obtenerProductoPorId(id: number) {
     throw new ApiError(404, "NO_ENCONTRADO", "Producto no encontrado.");
   }
 
-  const movimientos = await db
-    .select({
-      id: movimientosStock.id,
-      tipo: movimientosStock.tipo,
-      cantidad: movimientosStock.cantidad,
-      existenciaResultante: movimientosStock.existenciaResultante,
-      motivo: movimientosStock.motivo,
-      observacion: movimientosStock.observacion,
-      fecha: movimientosStock.fecha,
-      usuarioNombre: usuarios.nombre,
-    })
-    .from(movimientosStock)
-    .innerJoin(usuarios, eq(movimientosStock.usuarioId, usuarios.id))
-    .where(eq(movimientosStock.productoId, id))
-    .orderBy(desc(movimientosStock.id))
-    .limit(50);
-
+  const movimientos = await listarMovimientosProducto(_usuario, { productoId: id });
   return { ...producto, movimientos };
 }
 
-export async function crearProducto(
-  data: {
-    codigo: string;
-    descripcion: string;
-    categoriaId: number;
-    precio: number;
-    existenciaInicial: number;
-    stockMinimo: number;
-  },
-  usuarioId: number,
-) {
+/** RF-P3: Crea productos y registra la existencia inicial con moverStock(). */
+export async function crearProducto(usuario: UsuarioSesion, input: unknown) {
+  const data = crearProductoSchema.parse(input);
+  exigirAdmin(usuario);
+
   const [duplicado] = await db
     .select({ id: productos.id })
     .from(productos)
@@ -120,11 +160,11 @@ export async function crearProducto(
   const [categoria] = await db
     .select({ id: categorias.id })
     .from(categorias)
-    .where(eq(categorias.id, data.categoriaId))
+    .where(and(eq(categorias.id, data.categoriaId), eq(categorias.activa, true)))
     .limit(1);
 
   if (!categoria) {
-    throw new ApiError(404, "NO_ENCONTRADO", "La categoría seleccionada no existe.");
+    throw new ApiError(404, "NO_ENCONTRADO", "La categoría seleccionada no existe o está inactiva.");
   }
 
   return db.transaction(async (tx) => {
@@ -135,39 +175,32 @@ export async function crearProducto(
         descripcion: data.descripcion,
         categoriaId: data.categoriaId,
         precio: data.precio,
-        existencia: data.existenciaInicial,
+        existencia: 0,
         stockMinimo: data.stockMinimo,
         activo: true,
       })
       .returning();
 
     if (data.existenciaInicial > 0) {
-      await tx.insert(movimientosStock).values({
+      const { producto } = await moverStock(tx, {
         productoId: creado.id,
         tipo: "ingreso",
         cantidad: data.existenciaInicial,
-        existenciaResultante: data.existenciaInicial,
         motivo: "Stock inicial al dar de alta",
-        usuarioId,
-        fecha: ahoraIsoUtc(),
+        usuarioId: usuario.id,
       });
+      return producto;
     }
 
     return creado;
   });
 }
 
-export async function actualizarProducto(
-  id: number,
-  data: {
-    codigo?: string;
-    descripcion?: string;
-    categoriaId?: number;
-    precio?: number;
-    stockMinimo?: number;
-    activo?: boolean;
-  },
-) {
+/** RF-P4: Edita datos comerciales; la existencia no se acepta en PATCH. */
+export async function actualizarProducto(usuario: UsuarioSesion, input: unknown) {
+  const { id, cambios } = actualizarProductoInputSchema.parse(input);
+  exigirAdmin(usuario);
+
   const [actual] = await db
     .select()
     .from(productos)
@@ -178,118 +211,158 @@ export async function actualizarProducto(
     throw new ApiError(404, "NO_ENCONTRADO", "Producto no encontrado.");
   }
 
-  if (data.codigo && data.codigo.toUpperCase() !== actual.codigo.toUpperCase()) {
+  if (cambios.codigo && cambios.codigo.toUpperCase() !== actual.codigo.toUpperCase()) {
     const [duplicado] = await db
       .select({ id: productos.id })
       .from(productos)
-      .where(sql`upper(${productos.codigo}) = upper(${data.codigo})`)
+      .where(and(sql`upper(${productos.codigo}) = upper(${cambios.codigo})`, ne(productos.id, id)))
       .limit(1);
 
     if (duplicado) {
       throw new ApiError(
         409,
         "CODIGO_DUPLICADO",
-        `Ya existe otro repuesto con el código "${data.codigo}".`,
+        `Ya existe otro repuesto con el código "${cambios.codigo}".`,
       );
     }
   }
 
-  if (data.categoriaId !== undefined) {
+  if (cambios.categoriaId !== undefined) {
     const [categoria] = await db
       .select({ id: categorias.id })
       .from(categorias)
-      .where(eq(categorias.id, data.categoriaId))
+      .where(
+        and(
+          eq(categorias.id, cambios.categoriaId),
+          eq(categorias.activa, true),
+        ),
+      )
       .limit(1);
 
     if (!categoria) {
-      throw new ApiError(404, "NO_ENCONTRADO", "La categoría seleccionada no existe.");
+      throw new ApiError(404, "NO_ENCONTRADO", "La categoría no existe o está inactiva.");
     }
   }
 
   const [actualizado] = await db
     .update(productos)
-    .set({
-      ...(data.codigo !== undefined ? { codigo: data.codigo } : {}),
-      ...(data.descripcion !== undefined ? { descripcion: data.descripcion } : {}),
-      ...(data.categoriaId !== undefined ? { categoriaId: data.categoriaId } : {}),
-      ...(data.precio !== undefined ? { precio: data.precio } : {}),
-      ...(data.stockMinimo !== undefined ? { stockMinimo: data.stockMinimo } : {}),
-      ...(data.activo !== undefined ? { activo: data.activo } : {}),
-    })
+    .set(cambios)
     .where(eq(productos.id, id))
     .returning();
 
   return actualizado;
 }
 
+/** RF-P8: Registra un movimiento manual y protege la existencia con moverStock(). */
 export async function registrarMovimientoStock(
-  productoId: number,
-  data: {
-    tipo: "ingreso" | "egreso";
-    cantidad: number;
-    motivo: string;
-    observacion?: string;
-  },
-  usuarioId: number,
+  usuario: UsuarioSesion,
+  input: unknown,
 ) {
-  return db.transaction(async (tx) => {
-    const [producto] = await tx
-      .select()
-      .from(productos)
-      .where(eq(productos.id, productoId))
-      .limit(1);
+  const { productoId, cambios } =
+    registrarMovimientoStockInputSchema.parse(input);
+  exigirAdmin(usuario);
 
-    if (!producto) {
-      throw new ApiError(404, "NO_ENCONTRADO", "Producto no encontrado.");
-    }
+  return db.transaction((tx) =>
+    moverStock(tx, {
+      productoId,
+      ...cambios,
+      usuarioId: usuario.id,
+    }),
+  );
+}
 
-    const delta = data.tipo === "ingreso" ? data.cantidad : -data.cantidad;
-    const existenciaResultante = producto.existencia + delta;
+/** RF-P9: Devuelve el historial de stock de un producto. */
+export async function listarMovimientosProducto(
+  _usuario: UsuarioSesion,
+  input: unknown,
+) {
+  const { productoId } = z
+    .object({ productoId: z.coerce.number().int().positive() })
+    .strict()
+    .parse(input);
 
-    if (existenciaResultante < 0) {
-      throw new ApiError(
-        409,
-        "STOCK_INSUFICIENTE",
-        `Stock insuficiente. Existencia actual: ${producto.existencia}.`,
-      );
-    }
+  const [producto] = await db
+    .select({ id: productos.id })
+    .from(productos)
+    .where(eq(productos.id, productoId))
+    .limit(1);
 
-    const actualizados = await tx
-      .update(productos)
-      .set({ existencia: sql`${productos.existencia} + ${delta}` })
-      .where(
-        data.tipo === "egreso"
-          ? and(
-              eq(productos.id, productoId),
-              sql`${productos.existencia} >= ${data.cantidad}`,
-            )
-          : eq(productos.id, productoId),
-      )
-      .returning();
+  if (!producto) {
+    throw new ApiError(404, "NO_ENCONTRADO", "Producto no encontrado.");
+  }
 
-    if (actualizados.length === 0) {
-      throw new ApiError(
-        409,
-        "STOCK_INSUFICIENTE",
-        "El stock cambió concurrentemente y no alcanza para el egreso.",
-      );
-    }
+  return db
+    .select({
+      id: movimientosStock.id,
+      productoId: movimientosStock.productoId,
+      tipo: movimientosStock.tipo,
+      cantidad: movimientosStock.cantidad,
+      existenciaResultante: movimientosStock.existenciaResultante,
+      motivo: movimientosStock.motivo,
+      observacion: movimientosStock.observacion,
+      facturaId: movimientosStock.facturaId,
+      fecha: movimientosStock.fecha,
+      usuarioId: movimientosStock.usuarioId,
+      usuarioNombre: usuarios.nombre,
+    })
+    .from(movimientosStock)
+    .innerJoin(usuarios, eq(movimientosStock.usuarioId, usuarios.id))
+    .where(eq(movimientosStock.productoId, productoId))
+    .orderBy(desc(movimientosStock.id))
+    .limit(100);
+}
 
-    const productoActualizado = actualizados[0];
-    const [movimiento] = await tx
-      .insert(movimientosStock)
-      .values({
-        productoId,
-        tipo: data.tipo,
-        cantidad: data.cantidad,
-        existenciaResultante: productoActualizado.existencia,
-        motivo: data.motivo,
-        observacion: data.observacion ?? null,
-        usuarioId,
-        fecha: ahoraIsoUtc(),
-      })
-      .returning();
+/** RF-P10: Lista los movimientos de stock con filtros y paginación. */
+export async function listarMovimientosStock(
+  _usuario: UsuarioSesion,
+  input: unknown,
+) {
+  const filtros = listarMovimientosStockSchema.parse(input);
+  const condiciones: SQL[] = [];
+  if (filtros.productoId !== undefined) {
+    condiciones.push(eq(movimientosStock.productoId, filtros.productoId));
+  }
+  if (filtros.tipo) condiciones.push(eq(movimientosStock.tipo, filtros.tipo));
+  if (filtros.desde) condiciones.push(gte(movimientosStock.fecha, filtros.desde));
+  if (filtros.hasta) condiciones.push(lte(movimientosStock.fecha, filtros.hasta));
+  const where = condiciones.length ? and(...condiciones) : undefined;
+  const offset = (filtros.page - 1) * filtros.pageSize;
+  const [totalRow] = await db
+    .select({ total: count() })
+    .from(movimientosStock)
+    .where(where);
+  const items = await db
+    .select({
+      id: movimientosStock.id,
+      productoId: movimientosStock.productoId,
+      productoCodigo: productos.codigo,
+      productoDescripcion: productos.descripcion,
+      tipo: movimientosStock.tipo,
+      cantidad: movimientosStock.cantidad,
+      existenciaResultante: movimientosStock.existenciaResultante,
+      motivo: movimientosStock.motivo,
+      observacion: movimientosStock.observacion,
+      facturaId: movimientosStock.facturaId,
+      fecha: movimientosStock.fecha,
+      usuarioId: movimientosStock.usuarioId,
+      usuarioNombre: usuarios.nombre,
+    })
+    .from(movimientosStock)
+    .innerJoin(productos, eq(movimientosStock.productoId, productos.id))
+    .innerJoin(usuarios, eq(movimientosStock.usuarioId, usuarios.id))
+    .where(where)
+    .orderBy(desc(movimientosStock.id))
+    .limit(filtros.pageSize)
+    .offset(offset);
 
-    return { producto: productoActualizado, movimiento };
-  });
+  const total = Number(totalRow?.total ?? 0);
+  return {
+    items,
+    pagination: {
+      page: filtros.page,
+      pageSize: filtros.pageSize,
+      total,
+      totalPages: Math.ceil(total / filtros.pageSize),
+    },
+  };
 }

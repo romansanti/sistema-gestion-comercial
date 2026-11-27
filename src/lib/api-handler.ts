@@ -15,23 +15,35 @@ type PublicHandlerFn<TContext = unknown> = (
   ctx: TContext,
 ) => Promise<NextResponse>;
 
-function manejarError(err: unknown): NextResponse {
+export interface ApiErrorResponse {
+  status: number;
+  body: {
+    error: {
+      code: string;
+      message: string;
+      details?: Array<{ campo?: string; mensaje?: string }>;
+    };
+  };
+}
+
+export function traducirErrorApi(err: unknown): ApiErrorResponse {
   if (err instanceof ApiError) {
-    return NextResponse.json(
-      {
+    return {
+      status: err.status,
+      body: {
         error: {
           code: err.code,
           message: err.message,
           ...(err.details ? { details: err.details } : {}),
         },
       },
-      { status: err.status },
-    );
+    };
   }
 
   if (err instanceof ZodError) {
-    return NextResponse.json(
-      {
+    return {
+      status: 422,
+      body: {
         error: {
           code: "VALIDACION",
           message: "Hay campos con errores.",
@@ -41,20 +53,24 @@ function manejarError(err: unknown): NextResponse {
           })),
         },
       },
-      { status: 422 },
-    );
+    };
   }
 
   console.error("[API_ERROR_INTERNO]", err);
-  return NextResponse.json(
-    {
+  return {
+    status: 500,
+    body: {
       error: {
         code: "ERROR_INTERNO",
         message: "Ocurrió un error inesperado en el servidor.",
       },
     },
-    { status: 500 },
-  );
+  };
+}
+
+function manejarError(err: unknown): NextResponse {
+  const { status, body } = traducirErrorApi(err);
+  return NextResponse.json(body, { status });
 }
 
 export function withAuth<TContext = unknown>(

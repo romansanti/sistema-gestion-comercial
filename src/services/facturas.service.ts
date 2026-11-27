@@ -1,33 +1,76 @@
-import { and, desc, eq, sql, type SQL } from "drizzle-orm";
+import { and, desc, eq, gte, lt, or, sql, type SQL } from "drizzle-orm";
 import { db } from "@/db";
 import {
   clientes,
   facturaItems,
   facturas,
   movimientosCuenta,
-  movimientosStock,
   productos,
   usuarios,
 } from "@/db/schema";
 import { ApiError } from "@/lib/errors";
 import { ahoraIsoUtc, formatearNumeroFactura } from "@/lib/format";
+import {
+  anularFacturaInputSchema,
+  crearFacturaSchema,
+  facturaIdSchema,
+  listarFacturasSchema,
+} from "@/lib/schemas/facturas";
+import type { UsuarioSesion } from "@/lib/session";
 import { calcularSaldoCliente } from "./clientes.service";
+import { moverStock } from "./stock.service";
 
 const PUNTO_VENTA_ACTUAL = 1;
 
-export async function listarFacturas(filtros?: {
-  estado?: "emitida" | "anulada";
-  clienteId?: number;
-}) {
+function inicioDiaUtc(fecha: string): string {
+  return new Date(`${fecha}T00:00:00-03:00`).toISOString();
+}
+
+/** RF-V1: Lista facturas aplicando filtros validados y paginación. */
+export async function listarFacturas(
+  _usuario: UsuarioSesion,
+  input: unknown,
+) {
+  const filtros = listarFacturasSchema.parse(input);
   const condiciones: SQL[] = [];
-  if (filtros?.estado) {
+  if (filtros.estado) {
     condiciones.push(eq(facturas.estado, filtros.estado));
   }
-  if (filtros?.clienteId !== undefined) {
+  if (filtros.clienteId !== undefined) {
     condiciones.push(eq(facturas.clienteId, filtros.clienteId));
   }
+  if (filtros.formaPago) {
+    condiciones.push(eq(facturas.formaPago, filtros.formaPago));
+  }
+  if (filtros.desde) {
+    condiciones.push(gte(facturas.fecha, inicioDiaUtc(filtros.desde)));
+  }
+  if (filtros.hasta) {
+    const siguiente = new Date(inicioDiaUtc(filtros.hasta));
+    siguiente.setUTCDate(siguiente.getUTCDate() + 1);
+    condiciones.push(lt(facturas.fecha, siguiente.toISOString()));
+  }
+  if (filtros.q) {
+    const term = filtros.q.toLocaleLowerCase();
+    const search = or(
+      sql`lower(coalesce(${clientes.nombre}, 'Consumidor final')) like ${`%${term}%`}`,
+      sql`lower(${usuarios.nombre}) like ${`%${term}%`}`,
+      sql`lower(printf('%04d-%08d', ${facturas.puntoVenta}, ${facturas.numero})) like ${`%${term}%`}`,
+    );
+    if (search) condiciones.push(search);
+  }
 
-  return db
+  const where = condiciones.length > 0 ? and(...condiciones) : undefined;
+  const page = filtros.page;
+  const pageSize = filtros.pageSize;
+  const [totalRow] = await db
+    .select({ total: sql<number>`count(*)` })
+    .from(facturas)
+    .leftJoin(clientes, eq(facturas.clienteId, clientes.id))
+    .innerJoin(usuarios, eq(facturas.usuarioId, usuarios.id))
+    .where(where);
+
+  const items = await db
     .select({
       id: facturas.id,
       puntoVenta: facturas.puntoVenta,
@@ -44,12 +87,29 @@ export async function listarFacturas(filtros?: {
     .from(facturas)
     .leftJoin(clientes, eq(facturas.clienteId, clientes.id))
     .innerJoin(usuarios, eq(facturas.usuarioId, usuarios.id))
-    .where(condiciones.length > 0 ? and(...condiciones) : undefined)
+    .where(where)
     .orderBy(desc(facturas.id))
-    .limit(100);
+    .limit(pageSize)
+    .offset((page - 1) * pageSize);
+
+  const total = Number(totalRow?.total ?? 0);
+  return {
+    items,
+    pagination: {
+      page,
+      pageSize,
+      total,
+      totalPages: Math.ceil(total / pageSize),
+    },
+  };
 }
 
-export async function obtenerFacturaDetalle(id: number) {
+/** RF-V2: Devuelve el comprobante y sus ítems sin exponer datos de pago sensibles. */
+export async function obtenerFacturaDetalle(
+  _usuario: UsuarioSesion,
+  input: unknown,
+) {
+  const { id } = facturaIdSchema.parse(input);
   const [factura] = await db
     .select({
       id: facturas.id,
@@ -98,18 +158,12 @@ export async function obtenerFacturaDetalle(id: number) {
   return { ...factura, items };
 }
 
+/** RF-V3: Valida la venta, aplica límites y registra factura, cuenta y stock atómicamente. */
 export async function crearFactura(
-  data: {
-    clienteId?: number | null;
-    formaPago: "contado" | "tarjeta" | "cuenta_corriente";
-    montoRecibido?: number | null;
-    tarjetaTipo?: "debito" | "credito" | null;
-    tarjetaMarca?: string | null;
-    tarjetaUltimos4?: string | null;
-    items: Array<{ productoId: number; cantidad: number }>;
-  },
-  usuarioId: number,
+  usuario: UsuarioSesion,
+  input: unknown,
 ) {
+  const data = crearFacturaSchema.parse(input);
   const cantidadesPorProducto = new Map<number, number>();
   for (const item of data.items) {
     cantidadesPorProducto.set(
@@ -234,7 +288,7 @@ export async function crearFactura(
         numero: siguienteNumero,
         fecha,
         clienteId: cliente?.id ?? null,
-        usuarioId,
+        usuarioId: usuario.id,
         total: totalFactura,
         formaPago: data.formaPago,
         montoRecibido:
@@ -263,36 +317,13 @@ export async function crearFactura(
         subtotal: item.subtotal,
       });
 
-      const [productoActualizado] = await tx
-        .update(productos)
-        .set({
-          existencia: sql`${productos.existencia} - ${item.cantidad}`,
-        })
-        .where(
-          and(
-            eq(productos.id, item.productoId),
-            eq(productos.activo, true),
-            sql`${productos.existencia} >= ${item.cantidad}`,
-          ),
-        )
-        .returning();
-
-      if (!productoActualizado) {
-        throw new ApiError(
-          409,
-          "STOCK_INSUFICIENTE",
-          `Conflicto de concurrencia: no hay suficiente stock para "${item.descripcion}".`,
-        );
-      }
-
-      await tx.insert(movimientosStock).values({
+      await moverStock(tx, {
         productoId: item.productoId,
         tipo: "venta",
         cantidad: item.cantidad,
-        existenciaResultante: productoActualizado.existencia,
         motivo: `Venta Factura ${numeroFormateado}`,
         facturaId: facturaCreada.id,
-        usuarioId,
+        usuarioId: usuario.id,
         fecha,
       });
     }
@@ -312,11 +343,24 @@ export async function crearFactura(
   });
 }
 
+function exigirAdmin(usuario: UsuarioSesion): void {
+  if (usuario.rol !== "admin") {
+    throw new ApiError(
+      403,
+      "SIN_PERMISO",
+      "Esta acción requiere permisos de administrador.",
+    );
+  }
+}
+
+/** RF-V6, Regla 2: Solo un administrador puede anular una factura con motivo obligatorio. */
 export async function anularFactura(
-  facturaId: number,
-  motivoAnulacion: string,
-  usuarioId: number,
+  usuario: UsuarioSesion,
+  input: unknown,
 ) {
+  const { id: facturaId, motivoAnulacion } =
+    anularFacturaInputSchema.parse(input);
+  exigirAdmin(usuario);
   return db.transaction(async (tx) => {
     const [factura] = await tx
       .select()
@@ -346,7 +390,7 @@ export async function anularFactura(
         estado: "anulada",
         motivoAnulacion,
         fechaAnulacion: fecha,
-        usuarioAnulacionId: usuarioId,
+        usuarioAnulacionId: usuario.id,
       })
       .where(
         and(eq(facturas.id, facturaId), eq(facturas.estado, "emitida")),
@@ -367,31 +411,14 @@ export async function anularFactura(
       .where(eq(facturaItems.facturaId, facturaId));
 
     for (const item of items) {
-      const [productoActualizado] = await tx
-        .update(productos)
-        .set({
-          existencia: sql`${productos.existencia} + ${item.cantidad}`,
-        })
-        .where(eq(productos.id, item.productoId))
-        .returning();
-
-      if (!productoActualizado) {
-        throw new ApiError(
-          404,
-          "NO_ENCONTRADO",
-          `El producto ${item.productoId} de la factura no existe.`,
-        );
-      }
-
-      await tx.insert(movimientosStock).values({
+      await moverStock(tx, {
         productoId: item.productoId,
         tipo: "anulacion",
         cantidad: item.cantidad,
-        existenciaResultante: productoActualizado.existencia,
         motivo: `Anulación Factura ${numeroFormateado}`,
         observacion: motivoAnulacion,
         facturaId: factura.id,
-        usuarioId,
+        usuarioId: usuario.id,
         fecha,
       });
     }

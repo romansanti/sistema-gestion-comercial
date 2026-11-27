@@ -1,17 +1,14 @@
 import { redirect } from "next/navigation";
-import { Suspense } from "react";
+import { AppShell } from "@/components/layout/app-shell";
+import TableroView from "@/components/tablero/tablero-view";
 import { obtenerUsuarioActual } from "@/lib/session";
 
-async function RedirectHome() {
+export default async function HomePage() {
   const user = await obtenerUsuarioActual();
-  redirect(user ? "/ventas/nueva" : "/login");
-  return null;
-}
-
-export default function HomePage() {
+  if (!user) redirect("/login");
   return (
-    <Suspense fallback={<main className="min-h-screen bg-slate-950" />}>
-      <RedirectHome />
-    </Suspense>
+    <AppShell user={user}>
+      <TableroView />
+    </AppShell>
   );
 }

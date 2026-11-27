@@ -1,6 +1,6 @@
 # Sistema de Gestión Comercial — Casa de Repuestos de Motos y Autos
 
-Aplicación web full-stack para la gestión de mostrador (POS), catálogo de repuestos, control de stock con trazabilidad, cuenta corriente de talleres mecánicos y facturación.
+Aplicación web full-stack para la gestión de mostrador (POS), catálogo de repuestos, control de stock con trazabilidad, cuenta corriente de talleres mecánicos, facturación y reportes de gestión.
 
 ## Tecnologías
 
@@ -9,6 +9,14 @@ Aplicación web full-stack para la gestión de mostrador (POS), catálogo de rep
 - **Validaciones:** Zod
 - **Autenticación:** Cookies de sesión `HttpOnly` firmadas con HMAC-SHA256 y contraseñas hasheadas con `bcryptjs`
 - **Estilos e iconos:** Tailwind CSS y Lucide
+
+## Funcionalidades
+
+- Ventas de mostrador con control de existencias y datos de tarjeta limitados a marca, tipo y últimos cuatro dígitos.
+- Catálogo, categorías, movimientos de inventario y alerta de stock crítico.
+- Clientes, cuenta corriente, registro de pagos y recibos imprimibles.
+- Consulta e impresión de facturas, con anulación administrativa y trazabilidad.
+- Reportes administrativos de ventas, medios de pago, productos más vendidos, stock crítico y saldos deudores.
 
 ## Instalación y ejecución en local
 

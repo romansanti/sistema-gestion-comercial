@@ -7,7 +7,10 @@ import { cambiarPasswordSchema, loginSchema } from "@/lib/schemas/auth";
 import { UsuarioSesion } from "@/lib/session";
 
 /** RF-U1: Autentica un usuario activo con email y contraseña */
-export async function loginUsuario(input: unknown): Promise<UsuarioSesion> {
+export async function loginUsuario(
+  _usuarioAutenticado: null,
+  input: unknown,
+): Promise<UsuarioSesion> {
   const data = loginSchema.parse(input);
   const emailNormalizado = data.email.toLowerCase();
 
