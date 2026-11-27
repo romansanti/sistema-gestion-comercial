@@ -110,3 +110,15 @@ export async function exigirSesion(): Promise<UsuarioSesion> {
   }
   return user;
 }
+
+export async function exigirAdmin(): Promise<UsuarioSesion> {
+  const user = await exigirSesion();
+  if (user.rol !== "admin") {
+    throw new ApiError(
+      403,
+      "SIN_PERMISO",
+      "Esta acción requiere permisos de administrador.",
+    );
+  }
+  return user;
+}
