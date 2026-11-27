@@ -96,7 +96,14 @@ export default function LoginPage() {
           <p className="register-login-link">¿No tenés cuenta? <Link href="/registro">Crear cuenta nueva</Link></p>
           <p className="login-footer">Al continuar, aceptás el uso interno del sistema de gestión.</p>
         </div>
-        <div className="login-bottom-line"><span>MotoParts &amp; Ruta 9</span><span>Sistema Integral de Mostrador</span></div>
+        <div className="login-bottom-line">
+          <span>MotoParts &amp; Ruta 9</span>
+          <div className="login-team-members" aria-label="Integrantes del grupo">
+            <span>63307 Román Santiago</span>
+            <span>63310 Carobbio Tiziano</span>
+            <span>63633 Barroca Nahuel</span>
+          </div>
+        </div>
       </section>
     </main>
   );

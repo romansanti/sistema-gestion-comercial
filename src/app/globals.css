@@ -1,6 +1,11 @@
 @import "tailwindcss";
 @source "../";
 
+@theme inline {
+  --color-background: var(--paper);
+  --color-muted-foreground: var(--muted);
+}
+
 :root {
   --ink: #0f172a;
   --muted: #64748b;
@@ -404,6 +409,7 @@ input[type="checkbox"] { width: 14px; height: 14px; accent-color: var(--green); 
 .demo-arrow { align-self: flex-start; color: #9ba59e; font-size: 11px; }
 .login-footer { margin: 19px 0 0; color: #a3aca5; font-size: 9px; text-align: center; }
 .login-bottom-line { display: flex; width: min(390px, 100%); justify-content: space-between; margin-top: 32px; color: #a2aaa4; font-size: 9px; }
+.login-team-members { display: flex; flex-direction: column; gap: 2px; text-align: right; }
 .login-bottom-line a:hover { color: var(--orange); }
 .register-login-link { margin: 18px 0 0; color: #64748b; font-size: 11px; text-align: center; }
 .register-login-link a { color: #c2410c; font-weight: 700; }
@@ -501,4 +507,10 @@ input[type="checkbox"] { width: 14px; height: 14px; accent-color: var(--green); 
   .donut-legend { min-width: 115px; }
   .card-payment-fields { grid-template-columns: 1fr 1fr; }
   .card-payment-fields .field:last-child { grid-column: 1 / -1; }
+}
+
+body:has(.login-page) > footer { display: none; }
+
+@media print {
+  .no-print { display: none !important; }
 }
