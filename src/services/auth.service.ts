@@ -1,10 +1,55 @@
 import bcrypt from "bcryptjs";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { usuarios } from "@/db/schema";
 import { ApiError } from "@/lib/errors";
-import { cambiarPasswordSchema, loginSchema } from "@/lib/schemas/auth";
+import {
+  cambiarPasswordSchema,
+  loginSchema,
+  registroSchema,
+} from "@/lib/schemas/auth";
 import { UsuarioSesion } from "@/lib/session";
+import { errorDuplicado } from "./common.service";
+
+export async function registrarUsuario(input: unknown): Promise<UsuarioSesion> {
+  const data = registroSchema.parse(input);
+  const email = data.email.toLowerCase();
+  const [existing] = await db
+    .select({ id: usuarios.id })
+    .from(usuarios)
+    .where(sql`lower(${usuarios.email}) = ${email}`)
+    .limit(1);
+
+  if (existing) {
+    throw new ApiError(409, "EMAIL_DUPLICADO", "Ya existe un usuario con ese email.");
+  }
+
+  const passwordHash = await bcrypt.hash(data.password, 10);
+  const rol =
+    process.env.NODE_ENV === "production" ? "vendedor" : data.rol;
+
+  try {
+    const [user] = await db
+      .insert(usuarios)
+      .values({
+        nombre: data.nombre,
+        email,
+        passwordHash,
+        rol,
+        activo: true,
+      })
+      .returning({
+        id: usuarios.id,
+        nombre: usuarios.nombre,
+        email: usuarios.email,
+        rol: usuarios.rol,
+      });
+
+    return user;
+  } catch (error) {
+    errorDuplicado(error, "email");
+  }
+}
 
 /** RF-U1: Autentica un usuario activo con email y contraseña */
 export async function loginUsuario(input: unknown): Promise<UsuarioSesion> {
